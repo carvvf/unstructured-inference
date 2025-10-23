@@ -169,10 +169,13 @@ class UnstructuredObjectDetectionModel(UnstructuredModel):
 
     def deduplicate_detected_elements(
         self,
-        elements: LayoutElements,
+        elements: LayoutElements | list[LayoutElement],
         min_text_size: int = 15,
     ) -> LayoutElements:
         """Deletes overlapping elements in a list of elements."""
+
+        if isinstance(elements, list):
+            elements = LayoutElements.from_list(elements)
 
         if len(elements) <= 1:
             return elements

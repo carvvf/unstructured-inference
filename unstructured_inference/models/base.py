@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import logging
 from typing import Dict, Optional, Tuple, Type
 
 from unstructured_inference.models.detectron2onnx import (
@@ -14,6 +15,7 @@ from unstructured_inference.models.yolox import MODEL_TYPES as YOLOX_MODEL_TYPES
 from unstructured_inference.models.yolox import UnstructuredYoloXModel
 from unstructured_inference.utils import LazyDict
 
+logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "yolox"
 
 
@@ -59,6 +61,13 @@ def get_default_model_mappings() -> Tuple[
 model_class_map, model_config_map = get_default_model_mappings()
 
 
+def _log_model_usage(model_name: str, model: UnstructuredModel, cached: bool) -> None:
+    model_path = getattr(model, "model_path", None)
+    status = "Reusing" if cached else "Loaded"
+    extra = f" (path={model_path})" if model_path else ""
+    logger.info("%s inference model '%s'%s", status, model_name, extra)
+
+
 def register_new_model(model_config: dict, model_class: UnstructuredModel):
     """Register this model in model_config_map and model_class_map.
 
@@ -78,11 +87,15 @@ def get_model(model_name: Optional[str] = None) -> UnstructuredModel:
         model_name = default_name_from_env if default_name_from_env is not None else DEFAULT_MODEL
 
     if model_name in models:
-        return models[model_name]
+        model = models[model_name]
+        _log_model_usage(model_name, model, cached=True)
+        return model
 
     with models_lock:
         if model_name in models:
-            return models[model_name]
+            model = models[model_name]
+            _log_model_usage(model_name, model, cached=True)
+            return model
 
         initialize_param_json = os.environ.get(
             "UNSTRUCTURED_DEFAULT_MODEL_INITIALIZE_PARAMS_JSON_PATH"
@@ -104,6 +117,7 @@ def get_model(model_name: Optional[str] = None) -> UnstructuredModel:
 
         model.initialize(**initialize_params)
         models[model_name] = model
+        _log_model_usage(model_name, model, cached=False)
     return model
 
 
