@@ -24,6 +24,21 @@ from unstructured_inference.models.unstructuredmodel import (
 from unstructured_inference.visualize import draw_bbox
 
 
+_PAGE_ROTATION_ENV_VAR = "UNSTRUCTURED_ENABLE_LAYOUT_PAGE_ROTATION_DETECTION"
+
+
+def _env_var_to_bool(value: Optional[str], default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+DEFAULT_ENABLE_PAGE_ROTATION_DETECTION = _env_var_to_bool(
+    os.environ.get(_PAGE_ROTATION_ENV_VAR),
+    default=False,
+)
+
+
 def _clone_layout_elements(layout: LayoutElements) -> LayoutElements:
     return LayoutElements(
         element_coords=layout.element_coords.copy(),
@@ -226,6 +241,8 @@ class DocumentLayout:
         """Creates a DocumentLayout from a pdf file."""
         logger.info(f"Reading PDF for file: {filename} ...")
 
+        enable_page_rotation_detection = kwargs.pop("enable_page_rotation_detection", None)
+
         with tempfile.TemporaryDirectory() as temp_dir:
             _image_paths = convert_pdf_to_image(
                 filename,
@@ -248,6 +265,7 @@ class DocumentLayout:
                         number=i + 1,
                         document_filename=filename,
                         fixed_layout=fixed_layout,
+                        enable_page_rotation_detection=enable_page_rotation_detection,
                         **kwargs,
                     )
                     pages.append(page)
@@ -264,6 +282,9 @@ class DocumentLayout:
     ) -> DocumentLayout:
         """Creates a DocumentLayout from an image file."""
         logger.info(f"Reading image file: {filename} ...")
+
+        enable_page_rotation_detection = kwargs.pop("enable_page_rotation_detection", None)
+
         try:
             image = Image.open(filename)
             format = image.format
@@ -286,6 +307,7 @@ class DocumentLayout:
                 detection_model=detection_model,
                 element_extraction_model=element_extraction_model,
                 fixed_layout=fixed_layout,
+                enable_page_rotation_detection=enable_page_rotation_detection,
                 **kwargs,
             )
             pages.append(page)
@@ -305,6 +327,7 @@ class PageLayout:
         detection_model: Optional[UnstructuredObjectDetectionModel] = None,
         element_extraction_model: Optional[UnstructuredElementExtractionModel] = None,
         password: Optional[str] = None,
+        enable_page_rotation_detection: Optional[bool] = None,
     ):
         if detection_model is not None and element_extraction_model is not None:
             raise ValueError("Only one of detection_model and extraction_model should be passed.")
@@ -320,6 +343,9 @@ class PageLayout:
         self.element_extraction_model = element_extraction_model
         self.elements_array: LayoutElements | None = None
         self.password = password
+        if enable_page_rotation_detection is None:
+            enable_page_rotation_detection = DEFAULT_ENABLE_PAGE_ROTATION_DETECTION
+        self.enable_page_rotation_detection = enable_page_rotation_detection
         # NOTE(alan): Dropped LocationlessLayoutElement that was created for chipper - chipper has
         # locations now and if we need to support LayoutElements without bounding boxes we can make
         # the bbox property optional
@@ -366,11 +392,20 @@ class PageLayout:
         # NOTE(mrobinson) - We'll want make this model inference step some kind of
         # remote call in the future.
         assert self.image is not None
-        inferred_layout = _detect_layout_with_orientations(
-            self.image,
-            self.detection_model,
-            page_number=self.number,
-        )
+        if self.enable_page_rotation_detection:
+            inferred_layout = _detect_layout_with_orientations(
+                self.image,
+                self.detection_model,
+                page_number=self.number,
+            )
+        else:
+            layout_raw = self.detection_model(self.image)
+            if isinstance(layout_raw, list):
+                layout_raw = LayoutElements.from_list(layout_raw)
+            inferred_layout = _clone_layout_elements(layout_raw)
+            inferred_layout = self.detection_model.deduplicate_detected_elements(
+                inferred_layout,
+            )
 
         if inplace:
             self.elements_array = inferred_layout
@@ -469,6 +504,8 @@ class PageLayout:
         detection_model: Optional[UnstructuredObjectDetectionModel] = None,
         element_extraction_model: Optional[UnstructuredElementExtractionModel] = None,
         fixed_layout: Optional[List[TextRegion]] = None,
+        enable_page_rotation_detection: Optional[bool] = None,
+        **kwargs,
     ):
         """Creates a PageLayout from an already-loaded PIL Image."""
 
@@ -477,6 +514,7 @@ class PageLayout:
             image=image,
             detection_model=detection_model,
             element_extraction_model=element_extraction_model,
+            enable_page_rotation_detection=enable_page_rotation_detection,
         )
         # FIXME (yao): refactor the other methods so they all return elements like the third route
         if page.element_extraction_model is not None:
@@ -540,6 +578,7 @@ def process_file_with_model(
     """Processes pdf or image file with name filename into a DocumentLayout by using
     a model identified by model_name."""
 
+    enable_page_rotation_detection = kwargs.pop("enable_page_rotation_detection", None)
     model = get_model(model_name, **kwargs)
     if isinstance(model, UnstructuredObjectDetectionModel):
         detection_model = model
@@ -549,12 +588,16 @@ def process_file_with_model(
         element_extraction_model = model
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
+    layout_kwargs = dict(kwargs)
+    if enable_page_rotation_detection is not None:
+        layout_kwargs["enable_page_rotation_detection"] = enable_page_rotation_detection
+
     layout = (
         DocumentLayout.from_image_file(
             filename,
             detection_model=detection_model,
             element_extraction_model=element_extraction_model,
-            **kwargs,
+            **layout_kwargs,
         )
         if is_image
         else DocumentLayout.from_file(
@@ -564,7 +607,7 @@ def process_file_with_model(
             fixed_layouts=fixed_layouts,
             pdf_image_dpi=pdf_image_dpi,
             password=password,
-            **kwargs,
+            **layout_kwargs,
         )
     )
     return layout
