@@ -6,6 +6,7 @@ class Source(Enum):
     DETECTRON2_ONNX = "detectron2_onnx"
     DETECTRON2_LP = "detectron2_lp"
     MERGED = "merged"
+    PDF_TEXT = "pdf_text"
 
 
 class ElementType:

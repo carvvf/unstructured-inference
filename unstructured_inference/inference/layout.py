@@ -14,7 +14,15 @@ from PIL import Image, ImageSequence
 from unstructured_inference.inference.elements import (
     TextRegion,
 )
-from unstructured_inference.inference.layoutelement import LayoutElement, LayoutElements
+from unstructured_inference.inference.layoutelement import (
+    LayoutElement,
+    LayoutElements,
+    merge_inferred_layout_with_extracted_layout,
+)
+from unstructured_inference.inference.pdf_text_extraction import (
+    PDFPageText,
+    extract_pdf_text_layouts,
+)
 from unstructured_inference.logger import logger
 from unstructured_inference.models.base import get_model
 from unstructured_inference.models.unstructuredmodel import (
@@ -25,6 +33,7 @@ from unstructured_inference.visualize import draw_bbox
 
 
 _PAGE_ROTATION_ENV_VAR = "UNSTRUCTURED_ENABLE_LAYOUT_PAGE_ROTATION_DETECTION"
+_PDF_TEXT_ENV_VAR = "UNSTRUCTURED_USE_PDF_TEXT_EXTRACTION"
 
 
 def _env_var_to_bool(value: Optional[str], default: bool = False) -> bool:
@@ -35,6 +44,11 @@ def _env_var_to_bool(value: Optional[str], default: bool = False) -> bool:
 
 DEFAULT_ENABLE_PAGE_ROTATION_DETECTION = _env_var_to_bool(
     os.environ.get(_PAGE_ROTATION_ENV_VAR),
+    default=False,
+)
+
+DEFAULT_ENABLE_PDF_TEXT_EXTRACTION = _env_var_to_bool(
+    os.environ.get(_PDF_TEXT_ENV_VAR),
     default=False,
 )
 
@@ -242,6 +256,13 @@ class DocumentLayout:
         logger.info(f"Reading PDF for file: {filename} ...")
 
         enable_page_rotation_detection = kwargs.pop("enable_page_rotation_detection", None)
+        enable_pdf_text_extraction = kwargs.pop("enable_pdf_text_extraction", None)
+        if enable_pdf_text_extraction is None:
+            enable_pdf_text_extraction = DEFAULT_ENABLE_PDF_TEXT_EXTRACTION
+
+        pdf_text_layouts: list[PDFPageText] = []
+        if enable_pdf_text_extraction:
+            pdf_text_layouts = extract_pdf_text_layouts(filename, password=password)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             _image_paths = convert_pdf_to_image(
@@ -257,6 +278,12 @@ class DocumentLayout:
             if fixed_layouts is None:
                 fixed_layouts = [None for _ in range(0, number_of_pages)]
             for i, (image_path, fixed_layout) in enumerate(zip(image_paths, fixed_layouts)):
+                pdf_text_layout = (
+                    pdf_text_layouts[i].layout
+                    if enable_pdf_text_extraction and i < len(pdf_text_layouts)
+                    and pdf_text_layouts[i].has_text
+                    else None
+                )
                 # NOTE(robinson) - In the future, maybe we detect the page number and default
                 # to the index if it is not detected
                 with Image.open(image_path) as image:
@@ -265,6 +292,7 @@ class DocumentLayout:
                         number=i + 1,
                         document_filename=filename,
                         fixed_layout=fixed_layout,
+                        pdf_text_layout=pdf_text_layout,
                         enable_page_rotation_detection=enable_page_rotation_detection,
                         **kwargs,
                     )
@@ -284,6 +312,8 @@ class DocumentLayout:
         logger.info(f"Reading image file: {filename} ...")
 
         enable_page_rotation_detection = kwargs.pop("enable_page_rotation_detection", None)
+        # This option only applies to PDFs but may be passed through process_file_with_model.
+        kwargs.pop("enable_pdf_text_extraction", None)
 
         try:
             image = Image.open(filename)
@@ -328,6 +358,8 @@ class PageLayout:
         element_extraction_model: Optional[UnstructuredElementExtractionModel] = None,
         password: Optional[str] = None,
         enable_page_rotation_detection: Optional[bool] = None,
+        fixed_layout: Optional[List[TextRegion]] = None,
+        pdf_text_layout: Optional[LayoutElements] = None,
     ):
         if detection_model is not None and element_extraction_model is not None:
             raise ValueError("Only one of detection_model and extraction_model should be passed.")
@@ -346,6 +378,8 @@ class PageLayout:
         if enable_page_rotation_detection is None:
             enable_page_rotation_detection = DEFAULT_ENABLE_PAGE_ROTATION_DETECTION
         self.enable_page_rotation_detection = enable_page_rotation_detection
+        self.fixed_layout = fixed_layout
+        self.pdf_text_layout = pdf_text_layout
         # NOTE(alan): Dropped LocationlessLayoutElement that was created for chipper - chipper has
         # locations now and if we need to support LayoutElements without bounding boxes we can make
         # the bbox property optional
@@ -406,6 +440,21 @@ class PageLayout:
             inferred_layout = self.detection_model.deduplicate_detected_elements(
                 inferred_layout,
             )
+
+        extracted_regions: List[TextRegion] = []
+        if self.fixed_layout:
+            extracted_regions.extend(self.fixed_layout)
+        if self.pdf_text_layout is not None and len(self.pdf_text_layout.element_coords):
+            extracted_regions.extend(self.pdf_text_layout.as_list())
+
+        if extracted_regions:
+            page_width, page_height = self.image.size  # type: ignore[union-attr]
+            merged_layout = merge_inferred_layout_with_extracted_layout(
+                inferred_layout.as_list(),
+                extracted_regions,
+                (page_width, page_height),
+            )
+            inferred_layout = LayoutElements.from_list(merged_layout)
 
         if inplace:
             self.elements_array = inferred_layout
@@ -505,6 +554,7 @@ class PageLayout:
         element_extraction_model: Optional[UnstructuredElementExtractionModel] = None,
         fixed_layout: Optional[List[TextRegion]] = None,
         enable_page_rotation_detection: Optional[bool] = None,
+        pdf_text_layout: Optional[LayoutElements] = None,
         **kwargs,
     ):
         """Creates a PageLayout from an already-loaded PIL Image."""
@@ -515,14 +565,21 @@ class PageLayout:
             detection_model=detection_model,
             element_extraction_model=element_extraction_model,
             enable_page_rotation_detection=enable_page_rotation_detection,
+            fixed_layout=fixed_layout,
+            pdf_text_layout=pdf_text_layout,
         )
         # FIXME (yao): refactor the other methods so they all return elements like the third route
         if page.element_extraction_model is not None:
             page.get_elements_using_image_extraction()
-        elif fixed_layout is None:
-            page.get_elements_with_detection_model()
         else:
-            page.elements = []
+            page.get_elements_with_detection_model()
+
+        if (
+            page.elements_array is None
+            and page.pdf_text_layout is not None
+            and len(page.pdf_text_layout.texts)
+        ):
+            page.elements_array = page.pdf_text_layout
 
         page.image_metadata = {
             "format": page.image.format if page.image else None,
@@ -579,6 +636,7 @@ def process_file_with_model(
     a model identified by model_name."""
 
     enable_page_rotation_detection = kwargs.pop("enable_page_rotation_detection", None)
+    enable_pdf_text_extraction = kwargs.pop("enable_pdf_text_extraction", None)
     model = get_model(model_name, **kwargs)
     if isinstance(model, UnstructuredObjectDetectionModel):
         detection_model = model
@@ -591,6 +649,8 @@ def process_file_with_model(
     layout_kwargs = dict(kwargs)
     if enable_page_rotation_detection is not None:
         layout_kwargs["enable_page_rotation_detection"] = enable_page_rotation_detection
+    if enable_pdf_text_extraction is not None:
+        layout_kwargs["enable_pdf_text_extraction"] = enable_pdf_text_extraction
 
     layout = (
         DocumentLayout.from_image_file(

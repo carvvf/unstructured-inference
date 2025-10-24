@@ -13,6 +13,7 @@ from unstructured_inference.inference.elements import (
     EmbeddedTextRegion,
     ImageTextRegion,
 )
+from unstructured_inference.constants import ElementType, Source
 from unstructured_inference.models.unstructuredmodel import (
     UnstructuredElementExtractionModel,
     UnstructuredObjectDetectionModel,
@@ -485,6 +486,45 @@ def test_get_elements_with_detection_model_raises_with_wrong_default_model(monke
     page = layout.PageLayout(1, mock_image, None)
     with pytest.raises(NotImplementedError):
         page.get_elements_with_detection_model()
+
+
+def test_page_layout_merges_pdf_text_layout(mock_image):
+    detection_elements = [
+        layoutelement.LayoutElement.from_coords(
+            0,
+            0,
+            1,
+            1,
+            type=ElementType.PICTURE,
+            source="detect",
+        ),
+    ]
+    detection_layout = layoutelement.LayoutElements.from_list(detection_elements)
+    pdf_elements = [
+        layoutelement.LayoutElement.from_coords(
+            0,
+            0,
+            1,
+            1,
+            text="pdf native text",
+            type=ElementType.TEXT,
+            source=Source.PDF_TEXT,
+        ),
+    ]
+    pdf_layout = layoutelement.LayoutElements.from_list(pdf_elements)
+
+    detection_model = MockLayoutModel(detection_layout)
+    page = layout.PageLayout(
+        number=1,
+        image=mock_image,
+        detection_model=detection_model,
+        pdf_text_layout=pdf_layout,
+    )
+
+    merged_layout = page.get_elements_with_detection_model(inplace=False)
+    merged_texts = {el.text for el in merged_layout.as_list() if el.text}
+    assert "pdf native text" in merged_texts
+    assert any(el.type == ElementType.PICTURE for el in merged_layout.as_list())
 
 
 @pytest.mark.parametrize(
