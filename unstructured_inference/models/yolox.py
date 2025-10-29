@@ -9,7 +9,7 @@ import onnxruntime
 from onnxruntime.capi import _pybind_state as C
 from PIL import Image as PILImage
 
-from unstructured_inference.constants import ElementType, Source
+from unstructured_inference.constants import ElementType, Source, TextExtractionSource
 from unstructured_inference.inference.layoutelement import LayoutElements
 from unstructured_inference.models.unstructuredmodel import (
     UnstructuredObjectDetectionModel,
@@ -141,6 +141,10 @@ class UnstructuredYoloXModel(UnstructuredObjectDetectionModel):
             element_class_ids=sorted_dets[:, 5].astype(int),
             element_class_id_map=self.layout_classes,
             sources=np.array([Source.YOLOX] * sorted_dets.shape[0]),
+            text_extraction_sources=np.array(
+                [TextExtractionSource.OCR.value] * sorted_dets.shape[0],
+                dtype=object,
+            ),
         )
 
 

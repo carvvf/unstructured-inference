@@ -11,6 +11,7 @@ from unstructured_inference.config import inference_config
 from unstructured_inference.constants import (
     FULL_PAGE_REGION_THRESHOLD,
     ElementType,
+    TextExtractionSource,
 )
 from unstructured_inference.inference.elements import (
     ImageTextRegion,
@@ -25,6 +26,16 @@ from unstructured_inference.inference.elements import (
 EPSILON_AREA = 1e-7
 
 
+def _coerce_extraction_source(value: Any) -> Optional[str]:
+    if isinstance(value, TextExtractionSource):
+        return value.value
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
 @dataclass
 class LayoutElements(TextRegions):
     element_probs: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -32,6 +43,7 @@ class LayoutElements(TextRegions):
     element_class_id_map: dict[int, str] = field(default_factory=dict)
     text_as_html: np.ndarray = field(default_factory=lambda: np.array([]))
     table_as_cells: np.ndarray = field(default_factory=lambda: np.array([]))
+    text_extraction_sources: np.ndarray = field(default_factory=lambda: np.array([]))
 
     def __post_init__(self):
         element_size = self.element_coords.shape[0]
@@ -43,6 +55,7 @@ class LayoutElements(TextRegions):
             "texts",
             "text_as_html",
             "table_as_cells",
+            "text_extraction_sources",
         ):
             if getattr(self, attr).size == 0 and element_size:
                 setattr(self, attr, np.array([None] * element_size))
@@ -73,6 +86,9 @@ class LayoutElements(TextRegions):
             and np.array_equal(self.sources[mask], other.sources[mask])
             and np.array_equal(self.text_as_html[mask], other.text_as_html[mask])
             and np.array_equal(self.table_as_cells[mask], other.table_as_cells[mask])
+            and np.array_equal(
+                self.text_extraction_sources[mask], other.text_extraction_sources[mask]
+            )
         )
 
     def __getitem__(self, indices):
@@ -89,13 +105,14 @@ class LayoutElements(TextRegions):
             element_class_id_map=self.element_class_id_map,
             text_as_html=self.text_as_html[indices],
             table_as_cells=self.table_as_cells[indices],
+            text_extraction_sources=self.text_extraction_sources[indices],
         )
 
     @classmethod
     def concatenate(cls, groups: Iterable[LayoutElements]) -> LayoutElements:
         """concatenate a sequence of LayoutElements in order as one LayoutElements"""
         coords, texts, probs, class_ids, sources = [], [], [], [], []
-        text_as_html, table_as_cells = [], []
+        text_as_html, table_as_cells, text_extraction_sources = [], [], []
         class_id_reverse_map: dict[str, int] = {}
         for group in groups:
             coords.append(group.element_coords)
@@ -104,6 +121,7 @@ class LayoutElements(TextRegions):
             sources.append(group.sources)
             text_as_html.append(group.text_as_html)
             table_as_cells.append(group.table_as_cells)
+            text_extraction_sources.append(group.text_extraction_sources)
 
             idx = group.element_class_ids.copy()
             if group.element_class_id_map:
@@ -125,12 +143,18 @@ class LayoutElements(TextRegions):
             sources=np.concatenate(sources),
             text_as_html=np.concatenate(text_as_html),
             table_as_cells=np.concatenate(table_as_cells),
+            text_extraction_sources=np.concatenate(text_extraction_sources),
         )
 
     def iter_elements(self):
         """iter elements as one LayoutElement per iteration; this returns a generator and has less
         memory impact than the as_list method"""
-        for (x1, y1, x2, y2), text, prob, class_id, source, text_as_html, table_as_cells in zip(
+        for (
+            x1,
+            y1,
+            x2,
+            y2,
+        ), text, prob, class_id, source, text_as_html, table_as_cells, text_extraction_source in zip(
             self.element_coords,
             self.texts,
             self.element_probs,
@@ -138,6 +162,7 @@ class LayoutElements(TextRegions):
             self.sources,
             self.text_as_html,
             self.table_as_cells,
+            self.text_extraction_sources,
         ):
             yield LayoutElement.from_coords(
                 x1,
@@ -154,6 +179,7 @@ class LayoutElements(TextRegions):
                 source=source,
                 text_as_html=text_as_html,
                 table_as_cells=table_as_cells,
+                text_extraction_source=text_extraction_source,
             )
 
     @classmethod
@@ -165,6 +191,7 @@ class LayoutElements(TextRegions):
         # text and probs can be Nones so use lists first then convert into array to avoid them being
         # filled as nan
         texts, text_as_html, table_as_cells, sources, class_probs = [], [], [], [], []
+        text_extraction_sources = []
         class_types = np.empty((len_ele,), dtype="object")
 
         for i, element in enumerate(elements):
@@ -175,6 +202,7 @@ class LayoutElements(TextRegions):
             table_as_cells.append(element.table_as_cells)
             class_probs.append(element.prob)
             class_types[i] = element.type or "None"
+            text_extraction_sources.append(_coerce_extraction_source(element.text_extraction_source))
 
         unique_ids, class_ids = np.unique(class_types, return_inverse=True)
         unique_ids[unique_ids == "None"] = None
@@ -188,6 +216,7 @@ class LayoutElements(TextRegions):
             sources=np.array(sources),
             text_as_html=np.array(text_as_html),
             table_as_cells=np.array(table_as_cells),
+            text_extraction_sources=np.array(text_extraction_sources),
         )
 
 
@@ -199,6 +228,7 @@ class LayoutElement(TextRegion):
     parent: Optional[LayoutElement] = None
     text_as_html: Optional[str] = None
     table_as_cells: Optional[str] = None
+    text_extraction_source: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Converts the class instance to dictionary form."""
@@ -208,6 +238,7 @@ class LayoutElement(TextRegion):
             "type": self.type,
             "prob": self.prob,
             "source": self.source,
+            "text_extraction_source": self.text_extraction_source,
         }
         return out_dict
 
@@ -218,7 +249,17 @@ class LayoutElement(TextRegion):
         type = region.type if hasattr(region, "type") else None
         prob = region.prob if hasattr(region, "prob") else None
         source = region.source if hasattr(region, "source") else None
-        return cls(text=text, source=source, type=type, prob=prob, bbox=region.bbox)
+        text_extraction_source = _coerce_extraction_source(
+            getattr(region, "text_extraction_source", None),
+        )
+        return cls(
+            text=text,
+            source=source,
+            type=type,
+            prob=prob,
+            bbox=region.bbox,
+            text_extraction_source=text_extraction_source,
+        )
 
 
 def merge_inferred_layout_with_extracted_layout(
@@ -282,6 +323,12 @@ def merge_inferred_layout_with_extracted_layout(
                         # keep inferred region, remove extracted region
                         grow_region_to_match_region(inferred_region.bbox, extracted_region.bbox)
                         inferred_region.text = extracted_region.text
+                        extracted_source = getattr(extracted_region, "text_extraction_source", None)
+                        if extracted_source is None:
+                            extracted_source = TextExtractionSource.NATIVE.value
+                        inferred_region.text_extraction_source = _coerce_extraction_source(
+                            extracted_source,
+                        )
                         region_matched = True
                 elif extracted_is_subregion_of_inferred and inferred_is_text:
                     if extracted_is_image:
@@ -300,19 +347,30 @@ def merge_inferred_layout_with_extracted_layout(
         if not region_matched:
             extracted_elements_to_add.append(extracted_region)
     # Need to classify the extracted layout elements we're keeping.
-    categorized_extracted_elements_to_add = [
-        LayoutElement(
-            text=el.text,
-            type=(
-                ElementType.IMAGE
-                if isinstance(el, ImageTextRegion)
-                else ElementType.UNCATEGORIZED_TEXT
-            ),
-            source=el.source,
-            bbox=el.bbox,
+    categorized_extracted_elements_to_add: List[LayoutElement] = []
+    for el in extracted_elements_to_add:
+        default_extraction_source = (
+            TextExtractionSource.OCR.value
+            if isinstance(el, ImageTextRegion)
+            else TextExtractionSource.NATIVE.value
         )
-        for el in extracted_elements_to_add
-    ]
+        extraction_source = getattr(el, "text_extraction_source", None)
+        if extraction_source is None:
+            extraction_source = default_extraction_source
+        extraction_source = _coerce_extraction_source(extraction_source)
+        categorized_extracted_elements_to_add.append(
+            LayoutElement(
+                text=el.text,
+                type=(
+                    ElementType.IMAGE
+                    if isinstance(el, ImageTextRegion)
+                    else ElementType.UNCATEGORIZED_TEXT
+                ),
+                source=el.source,
+                bbox=el.bbox,
+                text_extraction_source=extraction_source,
+            )
+        )
     inferred_regions_to_add = [
         region for region in inferred_layout if region not in inferred_regions_to_remove
     ]
@@ -470,7 +528,15 @@ def clean_layoutelements(elements: LayoutElements, subregion_threshold: float = 
     final_attrs: dict[str, Any] = {
         "element_class_id_map": elements.element_class_id_map,
     }
-    for attr in ("element_class_ids", "element_probs", "texts", "sources"):
+    for attr in (
+        "element_class_ids",
+        "element_probs",
+        "texts",
+        "sources",
+        "text_as_html",
+        "table_as_cells",
+        "text_extraction_sources",
+    ):
         if (original_attr := getattr(elements, attr)) is None:
             continue
         final_attrs[attr] = original_attr[sorted_by_area][mask][sorted_by_y1]
@@ -546,7 +612,15 @@ def clean_layoutelements_for_class(
 
     final_coords = np.vstack([target_coords[mask], other_coords[other_mask]])
     final_attrs: dict[str, Any] = {"element_class_id_map": elements.element_class_id_map}
-    for attr in ("element_class_ids", "element_probs", "texts", "sources"):
+    for attr in (
+        "element_class_ids",
+        "element_probs",
+        "texts",
+        "sources",
+        "text_as_html",
+        "table_as_cells",
+        "text_extraction_sources",
+    ):
         if (original_attr := getattr(elements, attr)) is None:
             continue
         final_attrs[attr] = np.concatenate(

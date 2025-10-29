@@ -8,6 +8,11 @@ class Source(Enum):
     MERGED = "merged"
 
 
+class TextExtractionSource(str, Enum):
+    OCR = "ocr"
+    NATIVE = "native"
+
+
 class ElementType:
     PARAGRAPH = "Paragraph"
     IMAGE = "Image"

@@ -5,7 +5,7 @@ from unittest.mock import PropertyMock, patch
 import numpy as np
 import pytest
 
-from unstructured_inference.constants import ElementType
+from unstructured_inference.constants import ElementType, TextExtractionSource
 from unstructured_inference.inference import elements
 from unstructured_inference.inference.elements import (
     ImageTextRegion,
@@ -319,8 +319,10 @@ def test_merge_inferred_layout_with_extracted_layout():
     )
     assert merged_layout[0].type == ElementType.SECTION_HEADER
     assert merged_layout[0].text == "Example Section Header"
+    assert merged_layout[0].text_extraction_source == TextExtractionSource.NATIVE.value
     assert merged_layout[1].type == ElementType.TEXT
     assert merged_layout[1].text == "Example Title"
+    assert merged_layout[1].text_extraction_source == TextExtractionSource.NATIVE.value
 
     # case: extracted layout with a full page image
     merged_layout = merge_inferred_layout_with_extracted_layout(

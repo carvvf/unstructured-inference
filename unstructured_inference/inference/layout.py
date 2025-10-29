@@ -11,6 +11,7 @@ import numpy as np
 import pdf2image
 from PIL import Image, ImageSequence
 
+from unstructured_inference.constants import TextExtractionSource
 from unstructured_inference.inference.elements import (
     TextRegion,
 )
@@ -49,6 +50,7 @@ def _clone_layout_elements(layout: LayoutElements) -> LayoutElements:
         sources=layout.sources.copy(),
         text_as_html=layout.text_as_html.copy(),
         table_as_cells=layout.table_as_cells.copy(),
+        text_extraction_sources=layout.text_extraction_sources.copy(),
     )
 
 
@@ -169,6 +171,7 @@ def _detect_layout_with_orientations(
             sources=np.array([], dtype=object),
             text_as_html=np.array([], dtype=object),
             table_as_cells=np.array([], dtype=object),
+            text_extraction_sources=np.array([], dtype=object),
         )
 
     if best_score[0] == 0 and best_score[1] == 0:
@@ -406,6 +409,30 @@ class PageLayout:
             inferred_layout = self.detection_model.deduplicate_detected_elements(
                 inferred_layout,
             )
+        element_count = inferred_layout.element_coords.shape[0]
+        if element_count:
+            if inferred_layout.text_extraction_sources.size != element_count:
+                inferred_layout.text_extraction_sources = np.array(
+                    [TextExtractionSource.OCR.value] * element_count,
+                    dtype=object,
+                )
+            else:
+                normalized_sources: list[object] = []
+                for source in inferred_layout.text_extraction_sources:
+                    if source is None:
+                        normalized_sources.append(TextExtractionSource.OCR.value)
+                        continue
+                    if isinstance(source, TextExtractionSource):
+                        normalized_sources.append(source.value)
+                        continue
+                    if isinstance(source, float) and np.isnan(source):
+                        normalized_sources.append(TextExtractionSource.OCR.value)
+                        continue
+                    if isinstance(source, str) and not source.strip():
+                        normalized_sources.append(TextExtractionSource.OCR.value)
+                        continue
+                    normalized_sources.append(str(source))
+                inferred_layout.text_extraction_sources = np.array(normalized_sources, dtype=object)
 
         if inplace:
             self.elements_array = inferred_layout
