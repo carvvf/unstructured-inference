@@ -298,10 +298,25 @@ def test_separate(rect1, rect2):
 
 
 def test_merge_inferred_layout_with_extracted_layout():
-    inferred_layout = [
-        LayoutElement.from_coords(453, 322, 1258, 408, text=None, type=ElementType.SECTION_HEADER),
-        LayoutElement.from_coords(387, 477, 1320, 537, text=None, type=ElementType.TEXT),
-    ]
+    def build_inferred_layout():
+        return [
+            LayoutElement.from_coords(
+                453,
+                322,
+                1258,
+                408,
+                text=None,
+                type=ElementType.SECTION_HEADER,
+            ),
+            LayoutElement.from_coords(
+                387,
+                477,
+                1320,
+                537,
+                text=None,
+                type=ElementType.TEXT,
+            ),
+        ]
 
     extracted_layout = [
         TextRegion.from_coords(438, 318, 1272, 407, text="Example Section Header"),
@@ -313,7 +328,7 @@ def test_merge_inferred_layout_with_extracted_layout():
     ]
 
     merged_layout = merge_inferred_layout_with_extracted_layout(
-        inferred_layout=inferred_layout,
+        inferred_layout=build_inferred_layout(),
         extracted_layout=extracted_layout,
         page_image_size=(1700, 2200),
     )
@@ -324,13 +339,40 @@ def test_merge_inferred_layout_with_extracted_layout():
     assert merged_layout[1].text == "Example Title"
     assert merged_layout[1].text_extraction_source == TextExtractionSource.NATIVE.value
 
+    extracted_layout_subregion = [
+        TextRegion.from_coords(438, 318, 1272, 407, text="Example Section Header"),
+        TextRegion.from_coords(400, 480, 1310, 534, text="Example Title Subregion"),
+    ]
+    merged_layout = merge_inferred_layout_with_extracted_layout(
+        inferred_layout=build_inferred_layout(),
+        extracted_layout=extracted_layout_subregion,
+        page_image_size=(1700, 2200),
+    )
+    assert merged_layout[0].text == "Example Section Header"
+    assert merged_layout[0].text_extraction_source == TextExtractionSource.NATIVE.value
+    assert merged_layout[1].text == "Example Title Subregion"
+    assert merged_layout[1].text_extraction_source == TextExtractionSource.NATIVE.value
+
+    extracted_layout_with_ocr = [
+        ImageTextRegion.from_coords(377, 469, 1335, 535, text="OCR Title"),
+    ]
+    merged_layout = merge_inferred_layout_with_extracted_layout(
+        inferred_layout=build_inferred_layout(),
+        extracted_layout=extracted_layout_with_ocr,
+        page_image_size=(1700, 2200),
+    )
+    assert len(merged_layout) == 2
+    ocr_element = next(el for el in merged_layout if el.text == "OCR Title")
+    assert ocr_element.type == ElementType.IMAGE
+    assert ocr_element.text_extraction_source == TextExtractionSource.OCR.value
+
     # case: extracted layout with a full page image
     merged_layout = merge_inferred_layout_with_extracted_layout(
-        inferred_layout=inferred_layout,
+        inferred_layout=build_inferred_layout(),
         extracted_layout=extracted_layout_with_full_page_image,
         page_image_size=(1700, 2200),
     )
-    assert merged_layout == inferred_layout
+    assert merged_layout == build_inferred_layout()
 
 
 def test_clean_layoutelements(test_layoutelements):

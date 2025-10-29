@@ -36,6 +36,19 @@ def _coerce_extraction_source(value: Any) -> Optional[str]:
     return str(value)
 
 
+def _resolve_text_extraction_source(region: TextRegion) -> Optional[str]:
+    extraction_source = getattr(region, "text_extraction_source", None)
+    if extraction_source is None or (
+        isinstance(extraction_source, float) and np.isnan(extraction_source)
+    ) or (isinstance(extraction_source, str) and not extraction_source.strip()):
+        extraction_source = (
+            TextExtractionSource.OCR.value
+            if isinstance(region, ImageTextRegion)
+            else TextExtractionSource.NATIVE.value
+        )
+    return _coerce_extraction_source(extraction_source)
+
+
 @dataclass
 class LayoutElements(TextRegions):
     element_probs: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -323,11 +336,8 @@ def merge_inferred_layout_with_extracted_layout(
                         # keep inferred region, remove extracted region
                         grow_region_to_match_region(inferred_region.bbox, extracted_region.bbox)
                         inferred_region.text = extracted_region.text
-                        extracted_source = getattr(extracted_region, "text_extraction_source", None)
-                        if extracted_source is None:
-                            extracted_source = TextExtractionSource.NATIVE.value
-                        inferred_region.text_extraction_source = _coerce_extraction_source(
-                            extracted_source,
+                        inferred_region.text_extraction_source = _resolve_text_extraction_source(
+                            extracted_region,
                         )
                         region_matched = True
                 elif extracted_is_subregion_of_inferred and inferred_is_text:
@@ -337,6 +347,10 @@ def merge_inferred_layout_with_extracted_layout(
                     else:
                         # keep inferred region, remove extracted region
                         grow_region_to_match_region(inferred_region.bbox, extracted_region.bbox)
+                        inferred_region.text = extracted_region.text
+                        inferred_region.text_extraction_source = _resolve_text_extraction_source(
+                            extracted_region,
+                        )
                         region_matched = True
                 elif (
                     either_region_is_subregion_of_other
@@ -349,15 +363,7 @@ def merge_inferred_layout_with_extracted_layout(
     # Need to classify the extracted layout elements we're keeping.
     categorized_extracted_elements_to_add: List[LayoutElement] = []
     for el in extracted_elements_to_add:
-        default_extraction_source = (
-            TextExtractionSource.OCR.value
-            if isinstance(el, ImageTextRegion)
-            else TextExtractionSource.NATIVE.value
-        )
-        extraction_source = getattr(el, "text_extraction_source", None)
-        if extraction_source is None:
-            extraction_source = default_extraction_source
-        extraction_source = _coerce_extraction_source(extraction_source)
+        extraction_source = _resolve_text_extraction_source(el)
         categorized_extracted_elements_to_add.append(
             LayoutElement(
                 text=el.text,
